@@ -92,7 +92,7 @@
 <div class="card" id="checklistAdminCard">
 <h3>Manage Bangladesh Species Checklist</h3>
 <p class="small">Private drafts stay visible only to approved admins. Public visitors see only records you deliberately publish. Source verification is your responsibility.</p>
-<div id="checkAdminMessage" class="note" role="status">Checklist database connection is not set up yet. Follow checklist-setup.sql.</div>
+<div id="checkAdminMessage" class="note" role="status">Checking checklist database connection…</div>
 <div class="check-admin-grid">
 <div><form id="checklistAdminForm"><div class="fields">
 <div class="field"><label for="clName">Scientific name *</label><input id="clName" required maxlength="220" placeholder="Genus species"></div>
@@ -121,9 +121,23 @@ function locked(){if(!isAdmin){alert('Please sign in as an approved administrato
 function save(){if(locked())return;const snapshot=JSON.parse(JSON.stringify(state));renderAll();pendingSave=pendingSave.then(async()=>{const {error}=await sb.from('research_workspace').upsert({id:1,content:snapshot,updated_by:currentUser.id},{onConflict:'id'});if(error)throw error}).catch(error=>{alert('Cloud save failed: '+error.message+'\nDownload backup and check permissions.');console.error(error)});}
 async function syncWorkspace(){if(!isAdmin)return;const {data,error}=await sb.from('research_workspace').select('content').eq('id',1).maybeSingle();if(error)throw error;state=(data?.content&&Array.isArray(data.content.specimens)&&Array.isArray(data.content.refs))?data.content:{specimens:[],refs:[]};renderAll()}
 function setSessionUi(){const el=$('sessionIndicator');el.textContent=isAdmin?'● Admin signed in':'● Public visitor';$('signOutBtn').classList.toggle('hidden',!currentUser);$('signInBtn').disabled=isAdmin}
-async function refreshSession(){const {data:{user},error}=await sb.auth.getUser();if(error&&error.name!=='AuthSessionMissingError')console.warn(error);currentUser=user||null;isAdmin=false;state={specimens:[],refs:[]};if(currentUser){const result=await sb.from('app_admins').select('user_id').eq('user_id',currentUser.id).maybeSingle();if(result.error){notifyAuth('Permission check failed: '+result.error.message)}else if(result.data){isAdmin=true;await syncWorkspace();await loadChecklist();notifyAuth('✅ Admin authorized. You can open Admin workspace.')}else{notifyAuth('This account is signed in but not approved as an administrator. Follow SETUP.md to allow your account.')}}else notifyAuth('Enter your Supabase admin email and password.');renderAll();setSessionUi();if(!isAdmin)await loadChecklist();if(!isAdmin&&$('admin').classList.contains('active'))navigate('login')}
+async function refreshSession(){const {data:{user},error}=await sb.auth.getUser();if(error&&error.name!=='AuthSessionMissingError')console.warn(error);currentUser=user||null;isAdmin=false;state={specimens:[],refs:[]};if(currentUser){const result=await sb.from('app_admins').select('user_id').eq('user_id',currentUser.id).maybeSingle();if(result.error){notifyAuth('Permission check failed: '+result.error.message)}else if(result.data){isAdmin=true;try{await syncWorkspace()}catch(workspaceError){console.error('Workspace load failed:',workspaceError);notifyAuth('Admin recognized, but workspace load failed: '+workspaceError.message)}}else{notifyAuth('This account is signed in but not approved as an administrator. Follow SETUP.md to allow your account.')}}else notifyAuth('Enter your Supabase admin email and password.');renderAll();setSessionUi();if(isAdmin)notifyAuth('✅ Admin authorized. You can open Admin workspace.');loadChecklist().catch(e=>console.warn('Checklist error:',e));if(!isAdmin&&$('admin').classList.contains('active'))navigate('login')}
 async function initializeAuth(){if(SUPABASE_URL.includes('PASTE_')||SUPABASE_PUBLISHABLE_KEY.includes('PASTE_')){notifyAuth('Setup required: add your Project URL and Publishable Key to index.html (see SETUP.md).');return}if(typeof supabase==='undefined'){notifyAuth('Supabase library did not load. Check your internet connection.');return}try{sb=supabase.createClient(SUPABASE_URL,SUPABASE_PUBLISHABLE_KEY,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});await refreshSession();sb.auth.onAuthStateChange(()=>{setTimeout(()=>refreshSession().catch(e=>notifyAuth('Auth error: '+e.message)),0)})}catch(e){notifyAuth('Connection failed: '+e.message)}}
-$('loginForm').onsubmit=async e=>{e.preventDefault();if(!sb)return notifyAuth('Configure Supabase first.');const email=$('loginEmail').value.trim(),password=$('loginPassword').value;notifyAuth('Signing in…');const {error}=await sb.auth.signInWithPassword({email,password});$('loginPassword').value='';if(error)return notifyAuth('Login failed: '+error.message);await refreshSession();if(isAdmin)navigate('admin')};
+$('loginForm').onsubmit=async e=>{
+ e.preventDefault();
+ if(!sb)return notifyAuth('Supabase is not connected. Reload the page and try again.');
+ const email=$('loginEmail').value.trim(),password=$('loginPassword').value;
+ const btn=$('signInBtn');btn.disabled=true;
+ notifyAuth('Signing in…');
+ try{
+  const {error}=await sb.auth.signInWithPassword({email,password});
+  if(error)throw error;
+  await refreshSession();
+  if(isAdmin)navigate('admin');
+  else notifyAuth('Signed in, but this account is not approved as an administrator.');
+ }catch(error){notifyAuth('Sign in could not finish: '+error.message);console.error('Sign in failed:',error)}
+ finally{$('loginPassword').value='';btn.disabled=isAdmin;}
+};
 $('signOutBtn').onclick=async()=>{if(!sb)return;await pendingSave;await sb.auth.signOut();currentUser=null;isAdmin=false;state={specimens:[],refs:[]};setSessionUi();renderAll();notifyAuth('Signed out.');await loadChecklist();navigate('login')};
 $('migrateLegacy').onclick=()=>{if(locked())return;try{const old=JSON.parse(localStorage.getItem(STORE)||'null');if(!old||!Array.isArray(old.specimens)||!Array.isArray(old.refs))return alert('No old local records found in this browser.');if(!confirm('Replace CLOUD records with '+old.specimens.length+' old local specimens and '+old.refs.length+' references? First download a cloud backup!'))return;state={specimens:old.specimens,refs:old.refs};save();alert('Cloud upload started. Check the workspace and export a fresh backup.')}catch(e){alert('Unable to import old browser data: '+e.message)}};
 function notice(s){$('taxonMessage').textContent=s}function navigate(p){if(p==='admin'&&!isAdmin){p='login'}document.querySelectorAll('.page').forEach(x=>x.classList.toggle('active',x.id===p));document.querySelectorAll('[data-page]').forEach(x=>x.classList.toggle('active',x.dataset.page===p));$('crumb').textContent=({home:'Overview',taxonomy:'Taxonomy & search',occurrences:'Occurrence map',checklist:'Species checklist',profiles:'Species profiles',gallery:'Specimen gallery',bibliography:'Bibliography',tracking:'New record tracker',login:'Admin login',admin:'Admin workspace',about:'About & sources'})[p];$('sidebar').classList.remove('open');window.scrollTo(0,0);setTimeout(()=>{homeMap?.invalidateSize();mainMap?.invalidateSize()},150)}document.querySelectorAll('[data-page]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.page)));document.querySelectorAll('[data-goto]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.goto)));$('menu').onclick=()=>$('sidebar').classList.toggle('open');
@@ -185,8 +199,16 @@ function renderChecklist(){
   };row.onclick=open;row.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open()}};
  });
 }
-const checklistSubfamilies=[...new Set(CURATED_CHECKLIST.map(x=>x.subfamily).filter(Boolean))].sort();
-checklistSubfamilies.forEach(v=>{const option=document.createElement('option');option.value=v;option.textContent=v;document.getElementById('checklistSubfamily').append(option)});
+// Keep the subfamily choices in sync whenever Supabase records are loaded.
+function syncChecklistFilters(){
+ const select=$('checklistSubfamily');
+ const previous=select.value;
+ const values=[...new Set(CURATED_CHECKLIST.map(x=>x.subfamily).filter(Boolean))].sort();
+ select.replaceChildren(new Option('All subfamilies',''));
+ values.forEach(value=>select.add(new Option(value,value)));
+ select.value=values.includes(previous)?previous:'';
+}
+syncChecklistFilters();
 for(const id of ['checklistSearch','checklistSubfamily','checklistStatus'])document.getElementById(id).addEventListener('input',renderChecklist);
 document.getElementById('checklistCsv').addEventListener('click',()=>{
  const cols=['name','authority','subfamily','locality','status','source','sourceUrl'];
@@ -211,7 +233,7 @@ async function loadChecklist(){
   if(isAdmin)checkMessage('Checklist connected. '+rows.length+' saved records, '+CURATED_CHECKLIST.length+' public.');
  }catch(err){
   CURATED_CHECKLIST=[];checklistAdminEntries=[];syncChecklistFilters();renderChecklist();renderChecklistAdmin();
-  if(isAdmin)checkMessage('Checklist unavailable: '+err.message+'. Run checklist-setup.sql in Supabase SQL Editor first.');
+  if(isAdmin)checkMessage('Checklist could not load: '+err.message+'. Check Supabase access policies and session; do not rerun SQL automatically.');
   else console.warn('Checklist loading unavailable:',err.message);
  }
 }
